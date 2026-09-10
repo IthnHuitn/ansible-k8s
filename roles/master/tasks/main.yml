@@ -1,0 +1,97 @@
+---
+- name: Check if cluster is already initialized
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubeadm_admin_conf
+
+- name: Initialize Kubernetes cluster
+  ansible.builtin.command: |
+    kubeadm init \
+      --pod-network-cidr={{ pod_network_cidr }} \
+      --kubernetes-version=v{{ kubernetes_version }} \
+      --control-plane-endpoint={{ control_plane_endpoint }}
+      --apiserver-cert-extra-sans={{ ansible_host }}
+  when: not kubeadm_admin_conf.stat.exists
+  register: kubeadm_init
+  changed_when: kubeadm_init.rc == 0
+
+- name: Create .kube directory for debian user
+  ansible.builtin.file:
+    path: /home/debian/.kube
+    state: directory
+    owner: debian
+    group: debian
+    mode: '0755'
+
+- name: Copy admin.conf to debian's kubeconfig
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/debian/.kube/config
+    remote_src: yes
+    owner: debian
+    group: debian
+    mode: '0600'
+
+- name: Create .kube directory for root
+  ansible.builtin.file:
+    path: /root/.kube
+    state: directory
+    mode: '0755'
+
+- name: Copy admin.conf to root's kubeconfig
+  ansible.builtin.copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /root/.kube/config
+    remote_src: yes
+    mode: '0600'
+
+- name: Wait for Kubernetes API to be ready
+  ansible.builtin.wait_for:
+    host: "{{ private_ip }}"
+    port: 6443
+    delay: 5
+    timeout: 120
+
+- name: Check if Flannel is already installed
+  ansible.builtin.command: kubectl get daemonset kube-flannel-ds -n kube-flannel
+  register: flannel_check
+  changed_when: false
+  failed_when: false
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Install Flannel CNI
+  ansible.builtin.command: kubectl apply -f {{ flannel_manifest_url }}
+  when: flannel_check.rc != 0
+  register: flannel_install
+  changed_when: flannel_install.rc == 0
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+
+- name: Generate join command
+  ansible.builtin.command: kubeadm token create --print-join-command
+  register: join_command
+  changed_when: false
+
+- name: Save join command to file
+  ansible.builtin.copy:
+    content: "{{ join_command.stdout }}"
+    dest: /home/debian/join-command.txt
+    owner: debian
+    group: debian
+    mode: '0644'
+
+- name: Fetch join command to localhost
+  ansible.builtin.fetch:
+    src: /home/debian/join-command.txt
+    dest: /tmp/k8s-join-command.txt
+    flat: yes
+
+- name: Wait for all control-plane pods to be ready
+  ansible.builtin.command: >-
+    kubectl wait --for=condition=Ready pods
+    --all -n kube-system --timeout=300s
+  changed_when: false
+  ignore_errors: true
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf

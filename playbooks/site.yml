@@ -1,0 +1,193 @@
+---
+# ============================================================
+# Полный playbook для развёртывания Kubernetes-кластера
+# Порядок важен: prepare → master → workers
+# ============================================================
+
+# ==================== PLAY 0: Ожидание SSH ====================
+# КРИТИЧНО: Terraform запускает этот playbook сразу после создания ВМ.
+# ВМ могут ещё не успеть поднять SSH-сервис (cloud-init).
+# Этот play ждёт доступности SSH на всех нодах.
+- name: Wait for SSH to become available on all nodes
+  hosts: k8s_cluster
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH connection
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 600
+        sleep: 5
+      register: ssh_wait
+      retries: 3
+      delay: 30
+      until: ssh_wait is succeeded
+
+# ==================== PLAY 1: Подготовка всех нод ====================
+- name: Prepare all nodes (common + kubernetes)
+  hosts: k8s_cluster
+  become: true
+  roles:
+    - common
+    - kubernetes
+
+
+# ==================== PLAY 2: Инициализация master ====================
+- name: Configure master node
+  hosts: masters
+  become: true
+  roles:
+    - master
+
+# ==================== PLAY 3: Подключение worker'ов ====================
+- name: Configure worker nodes
+  hosts: workers
+  become: true
+  roles:
+    - worker
+
+# ==================== PLAY 4: Обновление kubeconfig на локальном ПК ====================
+- name: Fetch kubeconfig to local machine
+  hosts: masters
+  become: false
+  tasks:
+    - name: Read kubeconfig from master
+      ansible.builtin.slurp:
+        src: /home/debian/.kube/config
+      register: kubeconfig_content
+      run_once: true
+
+    - name: Write kubeconfig to local machine
+      ansible.builtin.copy:
+        content: "{{ kubeconfig_content.content | b64decode }}"
+        dest: "{{ lookup('env', 'HOME') }}/.kube/config"
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+    - name: Replace internal IP with public IP
+      ansible.builtin.replace:
+        path: "{{ lookup('env', 'HOME') }}/.kube/config"
+        regexp: 'server: https://.*:6443'
+        replace: 'server: https://{{ ansible_host }}:6443'
+      run_once: true
+      delegate_to: localhost
+      become: false
+
+# ==================== PLAY 5: Ingress NGINX ====================
+- name: Deploy ingress-nginx with NodePort
+  hosts: masters
+  become: true
+  tasks:
+    - name: Install Helm
+      ansible.builtin.shell: |
+        curl -fsSL https://get.helm.sh/helm-v3.14.0-linux-amd64.tar.gz -o /tmp/helm.tar.gz
+        tar -xzf /tmp/helm.tar.gz -C /tmp
+        mv /tmp/linux-amd64/helm /usr/local/bin/helm
+        chmod +x /usr/local/bin/helm
+      args:
+        creates: /usr/local/bin/helm
+
+    - name: Add ingress-nginx repo
+      ansible.builtin.shell: |
+        helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+        helm repo update
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Install ingress-nginx
+      ansible.builtin.shell: |
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+          --namespace ingress-nginx \
+          --create-namespace \
+          --set controller.service.type=NodePort \
+          --set controller.service.nodePorts.http=30080 \
+          --set controller.service.nodePorts.https=30443 \
+          --set controller.ingressClassResource.name=nginx \
+          --set controller.ingressClassResource.enabled=true
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+    - name: Wait for ingress-nginx controller to be ready
+      ansible.builtin.shell: |
+        kubectl wait --namespace ingress-nginx \
+          --for=condition=ready pod \
+          --selector=app.kubernetes.io/component=controller \
+          --timeout=300s
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+
+# ==================== PLAY 6: Мониторинг (kube-prometheus-stack) ====================
+- name: Deploy monitoring (kube-prometheus-stack)
+  hosts: masters
+  become: true
+  vars:
+    kubeconfig_path: /etc/kubernetes/admin.conf
+    helm_path: /usr/local/bin/helm
+
+  tasks:
+    - name: Add prometheus-community repo
+      ansible.builtin.shell: |
+        {{ helm_path }} repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        {{ helm_path }} repo update
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+    - name: Install kube-prometheus-stack
+      ansible.builtin.shell: |
+        {{ helm_path }} upgrade --install kube-prometheus-stack \
+          prometheus-community/kube-prometheus-stack \
+          --namespace monitoring \
+          --create-namespace \
+          --set grafana.persistence.enabled=false \
+          --set grafana.adminPassword=admin
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+    - name: Create Ingress for Grafana
+      ansible.builtin.shell: |
+        cat <<'EOF' | kubectl apply -f -
+        apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: grafana-ingress
+          namespace: monitoring
+          annotations:
+            nginx.ingress.kubernetes.io/rewrite-target: /
+        spec:
+          ingressClassName: nginx
+          rules:
+            - http:
+                paths:
+                  - path: /
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: kube-prometheus-stack-grafana
+                        port:
+                          number: 80
+        EOF
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+    - name: Wait for monitoring pods to be ready
+      ansible.builtin.shell: |
+        kubectl wait --namespace monitoring \
+          --for=condition=ready pod \
+          --all \
+          --timeout=300s
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+    - name: Show monitoring info
+      ansible.builtin.debug:
+        msg:
+          - "=================================================="
+          - "Мониторинг установлен"
+          - "Grafana: http://{{ ansible_host }}:30080/"
+          - "Login: admin"
+          - "Password: admin"
+          - "=================================================="

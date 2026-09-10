@@ -1,0 +1,2 @@
+# Реальный inventory генерируется Terraform'ом из hosts.yml.example
+hosts.yml

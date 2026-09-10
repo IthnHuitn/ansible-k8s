@@ -1,0 +1,24 @@
+# Inventory с реальными IP (генерируется Terraform)
+inventory/hosts.yml
+
+# Ansible артефакты
+*.retry
+.ansible/
+ansible.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+MOI
+*/*.*_origin
+
+.gitignore

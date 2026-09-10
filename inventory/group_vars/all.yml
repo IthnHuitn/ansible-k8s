@@ -1,0 +1,43 @@
+# ============================================================
+# Глобальные переменные для всех хостов
+# ============================================================
+
+# ==================== Ansible Connection ====================
+ansible_user: debian
+ansible_python_interpreter: /usr/bin/python3
+
+# ==================== Kubernetes Version ====================
+k8s_version: "1.35"
+kubernetes_version: "1.35.8"
+
+# ==================== Container Runtime ====================
+containerd_version: "1.7.0"
+
+# ==================== Network Configuration ====================
+pod_network_cidr: "10.244.0.0/16"
+service_cidr: "10.96.0.0/12"
+
+# ==================== Cluster Configuration ====================
+# ВАЖНО: control_plane_endpoint НЕ задаём здесь!
+# Он приходит из inventory (hosts.yml), который генерируется Terraform'ом.
+# Это позволяет избежать хардкода внутреннего IP мастера.
+#
+# Если запускаете Ansible вручную без Terraform — раскомментируйте:
+# control_plane_endpoint: "10.10.1.10:6443"
+
+# ==================== Flannel CNI ====================
+flannel_version: "v0.25.1"
+flannel_manifest_url: "https://github.com/flannel-io/flannel/releases/download/{{ flannel_version }}/kube-flannel.yml"
+
+# ==================== Common Packages ====================
+common_packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+  - software-properties-common
+  - jq
+  - vim
+  - htop
+  - net-tools
