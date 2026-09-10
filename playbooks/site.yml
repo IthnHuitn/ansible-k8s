@@ -1,0 +1,83 @@
+---
+# ============================================================
+# Полный playbook для развёртывания Kubernetes-кластера
+# Порядок важен: prepare → master → workers
+# ============================================================
+
+# ==================== PLAY 0: Ожидание SSH ====================
+# КРИТИЧНО: Terraform запускает этот playbook сразу после создания ВМ.
+# ВМ могут ещё не успеть поднять SSH-сервис (cloud-init).
+# Этот play ждёт доступности SSH на всех нодах.
+- name: Wait for SSH to become available on all nodes
+  hosts: k8s_cluster
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH connection
+      ansible.builtin.wait_for_connection:
+        delay: 10
+        timeout: 600
+        sleep: 5
+      register: ssh_wait
+      retries: 3
+      delay: 30
+      until: ssh_wait is succeeded
+
+# ==================== PLAY 1: Подготовка всех нод ====================
+- name: Prepare all nodes (common + kubernetes)
+  hosts: k8s_cluster
+  become: true
+  roles:
+    - common
+    - kubernetes
+
+
+# ==================== PLAY 2: Инициализация master ====================
+- name: Configure master node
+  hosts: masters
+  become: true
+  roles:
+    - master
+
+# ==================== PLAY 3: Подключение worker'ов ====================
+- name: Configure worker nodes
+  hosts: workers
+  become: true
+  roles:
+    - worker
+
+# ==================== PLAY 4: Обновление kubeconfig на локальном ПК ====================
+
+
+- name: Fetch kubeconfig to local machine
+  hosts: localhost
+  connection: local
+  become: false
+  tasks:
+    - name: Fetch kubeconfig from master
+      ansible.builtin.fetch:
+        src: /home/debian/.kube/config
+        dest: /tmp/k8s-new-config.conf
+        flat: yes
+      run_once: true
+      delegate_to: "{{ groups['master'][0] }}"
+
+    - name: Replace internal IP with public IP
+      ansible.builtin.replace:
+        path: /tmp/k8s-new-config.conf
+        regexp: 'server: https://.*:6443'
+        replace: 'server: https://{{ hostvars[groups["master"][0]]["ansible_host"] }}:6443'
+      run_once: true
+
+    - name: Merge new context into local kubeconfig
+      ansible.builtin.shell: |
+        KUBECONFIG={{ ansible_env.HOME }}/.kube/config:/tmp/k8s-new-config.conf \
+          kubectl config view --raw > /tmp/merged-kubeconfig.conf
+        mv /tmp/merged-kubeconfig.conf {{ ansible_env.HOME }}/.kube/config
+        rm -f /tmp/k8s-new-config.conf
+      run_once: true
+
+    - name: Set new cluster as current context
+      ansible.builtin.command: kubectl config use-context kubernetes-admin@kubernetes
+      run_once: true
+      ignore_errors: true
+

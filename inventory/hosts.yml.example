@@ -1,0 +1,40 @@
+# ============================================================
+# ПРИМЕР inventory-файла.
+# 
+# В реальной работе этот файл генерируется Terraform'ом:
+#   - шаблон:   02-infrastructure/templates/inventory.tpl
+#   - ресурс:   local_file.ansible_inventory
+#   - путь:     ../ansible-k8s/inventory/hosts.yml
+#
+# Если запускаете Ansible вручную:
+#   1. cp inventory/hosts.yml.example inventory/hosts.yml
+#   2. Подставьте реальные IP из `terraform output` (в 02-infrastructure)
+#   3. ansible-playbook -i inventory/hosts.yml playbooks/site.yml
+# ============================================================
+
+all:
+  children:
+    k8s_cluster:
+      children:
+        masters:
+          hosts:
+            k8s-master:
+              ansible_host: "MASTER_PUBLIC_IP"
+              private_ip: "MASTER_INTERNAL_IP"
+              ansible_user: ubuntu
+        workers:
+          hosts:
+            k8s-worker-1:
+              ansible_host: "WORKER1_PUBLIC_IP"
+              private_ip: "WORKER1_INTERNAL_IP"
+              ansible_user: ubuntu
+            k8s-worker-2:
+              ansible_host: "WORKER2_PUBLIC_IP"
+              private_ip: "WORKER2_INTERNAL_IP"
+              ansible_user: ubuntu
+            k8s-worker-3:
+              ansible_host: "WORKER3_PUBLIC_IP"
+              private_ip: "WORKER3_INTERNAL_IP"
+              ansible_user: ubuntu
+      vars:
+        control_plane_endpoint: "MASTER_INTERNAL_IP:6443"
