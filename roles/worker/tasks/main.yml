@@ -1,0 +1,24 @@
+---
+- name: Check if node is already joined
+  ansible.builtin.stat:
+    path: /etc/kubernetes/kubelet.conf
+  register: kubelet_conf
+
+- name: Read join command from localhost
+  ansible.builtin.slurp:
+    src: /tmp/k8s-join-command.txt
+  delegate_to: localhost
+  become: false
+  register: join_command_content
+  when: not kubelet_conf.stat.exists
+
+- name: Join cluster
+  ansible.builtin.command: "{{ join_command_content.content | b64decode }}"
+  when: not kubelet_conf.stat.exists
+  register: join_result
+  changed_when: join_result.rc == 0
+
+- name: Wait for kubelet to be ready
+  ansible.builtin.systemd:
+    name: kubelet
+    state: started
